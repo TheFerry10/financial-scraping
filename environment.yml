@@ -1,0 +1,21 @@
+name: financial_scraping
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.7
+  - numpy
+  - pandas
+  - seaborn
+  - scikit-learn
+  - ipykernel
+  - flask
+  - plotly
+  - pip
+  - pip:
+    - yfinance
+    - statsmodels
+    - quandl
+    - ipympl
+    - pystan=2.18.0.0
+    - fbprophet
