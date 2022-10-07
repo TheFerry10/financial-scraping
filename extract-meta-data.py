@@ -26,9 +26,6 @@ start_date = date.fromisoformat(args.start)
 end_date = date.fromisoformat(args.end)
 stock_ticker = [t.strip() for t in args.ticker.upper().split(',')]
 
-# Constants
-df_stocks = pd.read_csv(
-    "data/stocks/processed/20220824T074737_xetra_finanzen.csv")
 
 print("Ticker: ", stock_ticker)
 print("Start date: ", str(start_date))
@@ -102,7 +99,7 @@ def get_news_links(df_stocks, start_date, end_date):
 
 # sql helper functions
 def insert_article_meta_data(news_entry):
-    with conn:
+    with connect:
         c.execute("INSERT OR IGNORE INTO article_meta VALUES (:id, :ISIN, :date, :title, :source, :kicker, :link_article)",
                   news_entry
                   )
@@ -115,8 +112,8 @@ def get_all_article_meta_data():
     c.execute("SELECT * FROM article_meta")
     return c.fetchall()
 
-conn = sqlite3.connect('news.db')
-c = conn.cursor()
+connect = sqlite3.connect('news.db')
+c = connect.cursor()
 
 # create table
 c.execute("""
