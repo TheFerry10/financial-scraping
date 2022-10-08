@@ -10,6 +10,7 @@ import hashlib
 import argparse
 import sqlite3
 from article import ArticleMetaData
+from stocks import get_ISIN_and_news_link
 
 
 
@@ -24,10 +25,10 @@ args = parser.parse_args()
 # Input data
 start_date = date.fromisoformat(args.start)
 end_date = date.fromisoformat(args.end)
-stock_ticker = [t.strip() for t in args.ticker.upper().split(',')]
+tickers = [t.strip() for t in args.ticker.upper().split(',')]
 
 
-print("Ticker: ", stock_ticker)
+print("Ticker: ", tickers)
 print("Start date: ", str(start_date))
 print("End date: ", str(end_date))
 
@@ -54,11 +55,10 @@ def get_links_for_all_pages(soup):
         return []
 
 
-def get_news_links(df_stocks, start_date, end_date):
+def get_news_links(tickers, start_date, end_date):
     base_url = "https://www.finanzen.net"
-    extracted_news_properties = []
-    failed_links = []
-    for ISIN, url_news in df_stocks[['ISIN', 'news_link']].values:
+    ISIN_news_link_pairs = get_ISIN_and_news_link(tickers)
+    for ISIN, url_news in ISIN_news_link_pairs:
         links_all_pages = get_links_for_all_pages(get_soup(url_news))
         if links_all_pages:
             for link in links_all_pages:
@@ -91,11 +91,9 @@ def get_news_links(df_stocks, start_date, end_date):
                                 news_entry['link_article']
                                 
                         insert_article_meta_data(news_entry)
-                        extracted_news_properties.append(news_entry)
         else:
             print(url_news)
-            failed_links.append(url_news)
-    return extracted_news_properties
+    return 
 
 # sql helper functions
 def insert_article_meta_data(news_entry):
@@ -129,14 +127,4 @@ c.execute("""
           """)
 
 
-df_stocks_selected = df_stocks.query("Symbol in @stock_ticker").copy()
-extracted_news_properties = get_news_links(
-    df_stocks_selected, start_date, end_date)
-
-# stock_tickers = '-'.join(stock_ticker)
-# file_name = '_'.join(['news', stock_tickers, str(start_date), str(end_date)])
-# file_name += '.csv'
-# file_path = f"data/stocks/{file_name}"
-# df_stock_news = pd.DataFrame(extracted_news_properties)
-# df_stock_news.to_csv(file_path, index=False)
-# print(f"Save to {file_path}")
+extracted_news_properties = get_news_links(tickers, start_date, end_date)

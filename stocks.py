@@ -22,5 +22,3 @@ def get_ISIN_and_news_link(tickers):
                WHERE SYMBOL IN ({placeholder});"""
     c.execute(query, ticker_dict)
     return c.fetchall()
-
-print(get_ISIN_and_news_link(['GOOG', 'AMZN', 'ABT', 'AA']))
