@@ -6,6 +6,10 @@ import os
 import json
 from glob import glob
 import argparse
+import sqlite3
+from tqdm import tqdm
+import html_to_text
+import sql_queries
 
 # Argument parsing
 parser = argparse.ArgumentParser(description='Extract content from article meta data.')
@@ -52,96 +56,122 @@ def is_div_element_in_soup(soup, element_prop):
         return False
 
 
-base_url = "https://www.finanzen.net"
-file_path = 'data/stocks/news_UNLYF_2021-01-01_2021-12-31.csv'
-df_news_links = pd.read_csv(file_path)
-file_path_news_content = 'data/stocks/news_content_UNLYF_2021-01-01_2021-12-31.json'
+# sql helper functions
+def get_id_and_news_links():
+    query = """SELECT id, link_article FROM article_meta
+               LIMIT 5;"""
+    c.execute(query)
+    return c.fetchall()
 
-for id, url in df_news_links[['id', 'link_article']].values:
+def insert_news_content(news_content):
+    query = """INSERT OR IGNORE INTO article_content
+               VALUES (:ID, :TIMESTAMP, :HEADLINE, :TEASER, :CONTENT)"""
+    with connect:
+        c.execute(query, news_content)
+    
+
+# connect to news.db
+connect = sqlite3.connect("news.db")
+c = connect.cursor()
+
+# create table
+c.execute("""
+          CREATE TABLE IF NOT EXISTS article_content (
+              ID text UNIQUE,
+              TIMESTAMP text,
+              HEADLINE text,
+              TEASER text,
+              CONTENT text
+              )
+          """)
+
+
+
+
+base_url = "https://www.finanzen.net"
+
+
+for id, url in tqdm(sql_queries.article_records_not_in_table(columns=['link_article'])):
+    
     headline_text = None
     teaser_text = None
     news_extracted = None
     print(url)
 
-    if not is_url_ingested(id, file_path_news_content):
-        soup = get_soup(url)
-        if soup:
-            # headline
-            if is_div_element_in_soup(soup, {'class': 'row news-snapshot'}):
+
+    soup = get_soup(url)
+    if soup:
+        # headline
+        if is_div_element_in_soup(soup, {'class': 'row news-snapshot'}):
+            headline_html = soup.find(
+                'div', {'class': 'row news-snapshot'})
+        else:
+            if is_div_element_in_soup(soup, {'class': 'single-article'}):
                 headline_html = soup.find(
-                    'div', {'class': 'row news-snapshot'})
+                    'div', {'class': 'single-article'})
             else:
-                if is_div_element_in_soup(soup, {'class': 'single-article'}):
-                    headline_html = soup.find(
-                        'div', {'class': 'single-article'})
-                else:
-                    headline_html = None
+                headline_html = None
 
-            try:
-                headline_text = headline_html.find(
-                    'h1').text.encode('latin').decode()
-            except AttributeError:
-                print('Headline has not been identified from the implemented rules.')
-                print(headline_html)
-                raise
+        try:
+            headline_text = headline_html.find(
+                'h1').text.encode('latin').decode()
+        except AttributeError:
+            print('Headline has not been identified from the implemented rules.')
+            print(headline_html)
+            continue
 
-            # teaser
-            if is_div_element_in_soup(soup, {'class': 'teaser teaser-snapshot'}):
-                teaser_html = soup.find(
-                    'div', {'class': 'teaser teaser-snapshot'})
-            else:
-                teaser_html = None
+        # teaser
+        if is_div_element_in_soup(soup, {'class': 'teaser teaser-snapshot'}):
+            teaser_html = soup.find(
+                'div', {'class': 'teaser teaser-snapshot'})
+        else:
+            teaser_html = None
 
-            try:
-                teaser_text = teaser_html.find_all(
-                    'div')[-1].text.encode('latin').decode()
-            except AttributeError:
-                print('Teaser has not been identified from the implemented rules.')
-                raise
+        try:
+            teaser_text = teaser_html.find_all(
+                'div')[-1].text.encode('latin').decode()
+        except AttributeError:
+            print('Teaser has not been identified from the implemented rules.')
+            print(teaser_html)
+            continue
 
-            if is_div_element_in_soup(soup, {'class': 'pull-left mright-20'}):
-                datetime_html = soup.find(
-                    'div', {'class': 'pull-left mright-20'})
-            else:
-                datetime_html = None
+        if is_div_element_in_soup(soup, {'class': 'pull-left mright-20'}):
+            datetime_html = soup.find(
+                'div', {'class': 'pull-left mright-20'})
+        else:
+            datetime_html = None
 
-            try:
-                datetime_text = datetime_html.text
-            except AttributeError:
-                print('No date found in article')
-                datetime_text = None
+        try:
+            datetime_text = datetime_html.text
+        except AttributeError:
+            print('No date found in article')
+            datetime_text = None
 
-            # news content
-            news_container = soup.find('div', {'id': 'news-container'})
+        # news content
+        news_container = soup.find('div', {'id': 'news-container'})
 
-            div_properties_to_delete = [
-                {'class': 'dropdown-container-triangle seperate-triangle'},
-                {'class': 'dropdown-container-chartflow relative'},
-                {'class': 'visible-xs-block'},
-                {'class': 'pull-right'},
-                {'class': 'lvgSearchOuter'},
-                {'class': 'native-content-ad-container'},
-                {'class': 'medium-font light-grey'},
-                {'class': '', },
-            ]
+        div_properties_to_delete = [
+            {'class': 'dropdown-container-triangle seperate-triangle'},
+            {'class': 'dropdown-container-chartflow relative'},
+            {'class': 'visible-xs-block'},
+            {'class': 'pull-right'},
+            {'class': 'lvgSearchOuter'},
+            {'class': 'native-content-ad-container'},
+            {'class': 'medium-font light-grey'},
+            {'class': '', },
+        ]
 
-            for div_properties in div_properties_to_delete:
-                if news_container.find('div', div_properties):
-                    news_container.find('div', div_properties).decompose()
+        for div_properties in div_properties_to_delete:
+            if news_container.find('div', div_properties):
+                news_container.find('div', div_properties).decompose()
 
-            news_content = news_container.prettify()
+        content_html = news_container.prettify()
+        content_text = html_to_text.cut_text_at_phrase(text=html_to_text.html_to_text(content_html), phrase='Weitere News zum Thema')
 
-            # put the content together in a structured format
-            news_extracted = {key: value for key, value in zip(['id', 'timestamp', 'headline', 'teaser', 'content_html'], [
-                id, datetime_text, headline_text, teaser_text, news_content])}
-            append_to_json(file_path_news_content, news_extracted)
-            # extracted_news_from_url.append(news_extracted)
+        # put the content together in a structured format
+        news_extracted = {key: value for key, value in zip(
+            ['ID', 'TIMESTAMP', 'HEADLINE', 'TEASER', 'CONTENT'],
+            [id, datetime_text, headline_text, teaser_text, content_text])
+                          }
+        insert_news_content(news_extracted)
 
-
-with open(file_path_news_content, 'r') as f:
-    news_data = json.load(f)
-df_news = pd.DataFrame(news_data)
-
-file_name_news_content = 'data/stocks/news_content_UNLYF_2021-01-01_2021-12-31.csv'
-df_news.to_csv(file_name_news_content, index=False)
-print("Saved to", file_name_news_content)

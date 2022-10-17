@@ -4,6 +4,14 @@ connect = sqlite3.connect("news.db")
 c = connect.cursor()
 table_name = "stocks"
 
+
+def select_columns_from_table(columns, table):
+    columns_string = ','.join(columns)
+    query = f"""SELECT {columns_string} FROM {table};"""
+    c.execute(query)
+    return c.fetchall()
+    
+
 def get_ISIN(limit=None):
     if limit is not None:
         query = f"SELECT ISIN FROM {table_name} LIMIT {limit};"
