@@ -9,9 +9,7 @@ class ArticleMetaData:
         self.source = source
         self.kicker = kicker
         self.link_article = link_article
-        
 
     def __repr__(self):
         repr = f"ArticleMetaData({self.id}, {self.ISIN}, {self.date}, {self.title}, {self.source}, {self.kicker}, {self.link_article})"
         return repr
-
