@@ -4,7 +4,14 @@ import sqlite3
 from tqdm import tqdm
 from dataclasses import dataclass
 from scraping.retrieve import get_soup
+from scraping.retrieve import get_soup, get_hash_from_string
+from datetime import datetime
+from datetime import date
+from typing import List
+import re
 
+
+StockTickers = List[str]
 
 @dataclass
 class Stock:
@@ -12,17 +19,48 @@ class Stock:
     name: str
 
 
+
+class NewsQueries:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        self.c = conn.cursor()
+    
+    def insert_article_meta_data(self, news_entry):
+        with self.c:
+            self.c.execute(
+                "INSERT OR IGNORE INTO article_meta VALUES (:id, :ISIN, :date, :title, :source, :kicker, :link_article)",
+                news_entry,
+            )
+
+
+    def get_article_meta_data_by_id(self, id):
+        self.c.execute("SELECT * FROM article_meta WHERE id=:id", {"id", id})
+        return self.c.fetchall()
+
+
+    def get_all_article_meta_data(self):
+        self.c.execute("SELECT * FROM article_meta")
+        return self.c.fetchall()
+
+    def create_article_table_meta(self):
+        table_name = "article_meta"
+        query = f"""CREATE TABLE IF NOT EXISTS {table_name} (
+                        ID text UNIQUE,
+                        ISIN text,
+                        Date text,
+                        Title text,
+                        Source text,
+                        Kicker text,
+                        LinkArticle text)
+                        """
+        self.c.execute(query)
+
+
 class StockQueries:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
-        self.c = c = conn.cursor()
+        self.c = conn.cursor()
 
-    def insert_stock(self, stock: Stock) -> None:
-        with self.conn:
-            self.c.execute(
-                "INSERT OR IGNORE INTO stocks VALUES (:ISIN, :name)",
-                {"ISIN": stock.ISIN, "name": stock.name},
-            )
 
     def create_stock_table_base(self):
         table_name = "stocks"
@@ -45,6 +83,13 @@ class StockQueries:
                 """
         self.c.execute(query)
 
+    def insert_stock(self, stock: Stock) -> None:
+        with self.conn:
+            self.c.execute(
+                "INSERT OR IGNORE INTO stocks VALUES (:ISIN, :name)",
+                {"ISIN": stock.ISIN, "name": stock.name},
+            )
+
     def insert_stock_information(self, stock_information):
         table_name = "stocks_enriched"
         query = f"""INSERT OR IGNORE INTO {table_name}
@@ -58,13 +103,14 @@ class StockQueries:
         self.c.execute(query)
         return self.c.fetchall()
 
+
     def get_ISIN_and_news_link(self, tickers):
-        keys = [f"ticker_{i}" for i in range(len(tickers))]
-        keys_in_query = [f":ticker_{i}" for i in range(len(tickers))]
-        ticker_dict = {key: value for key, value in zip(keys, tickers)}
-        placeholder = ",".join(keys_in_query)
-        query = f"""SELECT ISIN, NEWS_LINK FROM stocks_enriched
-                WHERE SYMBOL IN ({placeholder});"""
+        table_name = "stocks_enriched"
+        ticker_dict = {key: value for key, value in zip([f"ticker_{i}" for i in range(len(tickers))], tickers)}
+        query_placeholder = ",".join([f":ticker_{i}" for i in range(len(tickers))])
+        query = f"""SELECT ISIN, NEWS_LINK FROM {table_name}
+                    WHERE SYMBOL IN ({query_placeholder});
+                    """
         self.c.execute(query, ticker_dict)
         return self.c.fetchall()
 
@@ -161,8 +207,106 @@ class StockEnricher:
             self.stockQueries.insert_stock_information(stock_properties)
 
 
+class ArticleMetaScraper:
+    def __init__(self, conn: sqlite3.Connection, start_date: datetime.date, end_date: datetime.date, tickers: StockTickers):
+        self.base_url = "https://www.finanzen.net"
+        self.stockQueries = StockQueries(conn)
+        self.newsQueries = NewsQueries(conn)
+        self.start_date = start_date
+        self.end_date = end_date
+        self.tickers = tickers
+    
+    
+    def extract_news_metadata(self, ISIN, link):
+        url = self.base_url + link
+        print(url)
+        response = requests.get(url)
+        soup = get_soup(response)
+        
+        for news in soup.find_all(
+            "div", {"class": "news news--item-with-media"}
+        ):
+            news_entry = dict()
+            news_date = news.find("time", {"class": "news__date"})
+            
+            if re.match(r"^[0-5][0-9]:[0-5][0-9]$", news_date.text):
+                article_date = date.today()
+            else:
+                article_date = datetime.strptime(news_date.text, "%d.%m.%y").date()
+
+            if self.start_date <= article_date <= self.end_date:
+                source = news.find("span", {"class": "news__source"})
+                kicker = news.find("span", {"class": "news__kicker"})
+                title = news.find("span", {"class": "news__title"})
+                link = news.find("a", {"class": "news__card"}).attrs[
+                    "href"
+                ]
+                id = get_hash_from_string(link)
+                keys = [
+                    "id",
+                    "ISIN",
+                    "date",
+                    "title",
+                    "source",
+                    "kicker",
+                    "link_article",
+                ]
+                values = [id, ISIN, news_date, title, source, kicker, link]
+                for key, value in zip(keys, values):
+                    if hasattr(value, "text"):
+                        news_entry[key] = value.text.encode(
+                            "latin"
+                        ).decode()
+                    else:
+                        news_entry[key] = value
+                if news_entry["link_article"]:
+                    news_entry["link_article"] = (
+                        self.base_url + news_entry["link_article"]
+                    )
+                self.newsQueries.insert_article_meta_data(news_entry)
+    
+
+    def get_news_links(self):
+        ISIN_news_link_pairs = self.stockQueries.get_ISIN_and_news_link(self.tickers)
+        for ISIN, url_news in ISIN_news_link_pairs:
+            pagination_links = get_pagination_links(url_news)
+            if pagination_links:
+                for link in pagination_links:
+                    self.extract_news_metadata(ISIN, link)
+            else:
+                print(url_news)
+        return
+
+
+
 website_check_xetra = dict(
     url="https://www.xetra.com/xetra-de/instrumente/aktien/liste-der-handelbaren-aktien",
     target_text="Ergebnisse",
     element_to_check={"name": "div", "attrs": {"class": "results"}},
 )
+
+def validate_links(links):
+    print("Validate links...")
+    for link in tqdm(links):
+        response = requests.get(link)
+        if response.status_code != 200:
+            raise ValueError
+    print("Validation successful")
+
+
+def get_pagination_links(url: str):
+    base_url = "https://www.finanzen.net"
+    response = requests.get(url)
+    soup = get_soup(response)
+    
+    pagination_list = soup.find("ul", {"class": "pagination__list"})
+    pagination_objects = pagination_list.find_all("a", {"class": "pagination__text"})
+    links = [pagination.attrs["href"] for pagination in pagination_objects]
+    base_links = [link.split('_')[0] for link in links if len(link.split('_')) == 2]
+    page_numbers = [int(link.split('_')[1]) for link in links if len(link.split('_')) == 2]
+    max_page = max(page_numbers)
+    base_link = max(base_links, key=base_links.count)
+    links = [base_url + "_".join([base_link, str(i)]) for i in range(1, max_page+1)]
+    validate_links(links)
+    return links
+    

@@ -6,12 +6,18 @@ from tqdm import tqdm
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass
+import hashlib
 
 
 def get_soup(response: dict):
     if response.status_code != 200:
         raise ValueError
     return BeautifulSoup(response.text, 'html.parser')
+
+
+def get_hash_from_string(string):
+    result = hashlib.sha1(string.encode())
+    return result.hexdigest()
 
    
 class WebsiteCheck(object):
