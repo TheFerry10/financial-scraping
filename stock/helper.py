@@ -9,6 +9,10 @@ from datetime import datetime
 from datetime import date
 from typing import List
 import re
+from typing import List
+
+
+StockTicker = str    
 
 
 StockTickers = List[str]
@@ -28,7 +32,7 @@ class NewsQueries:
     def insert_article_meta_data(self, news_entry):
         with self.c:
             self.c.execute(
-                "INSERT OR IGNORE INTO article_meta VALUES (:id, :ISIN, :date, :title, :source, :kicker, :link_article)",
+                "INSERT OR IGNORE INTO article_meta VALUES (:id, :isin, :news_datetime, :title, :source, :kicker, :link)",
                 news_entry,
             )
 
@@ -45,13 +49,13 @@ class NewsQueries:
     def create_article_table_meta(self):
         table_name = "article_meta"
         query = f"""CREATE TABLE IF NOT EXISTS {table_name} (
-                        ID text UNIQUE,
-                        ISIN text,
-                        Date text,
-                        Title text,
-                        Source text,
-                        Kicker text,
-                        LinkArticle text)
+                        id text UNIQUE,
+                        isin text,
+                        news_datetime text,
+                        title text,
+                        source text,
+                        kicker text,
+                        link text)
                         """
         self.c.execute(query)
 
@@ -97,22 +101,15 @@ class StockQueries:
         with self.conn:
             self.c.execute(query, stock_information)
 
-    def select_columns_from_table(self, columns, table):
+
+    def select_columns_from_table(self, columns, table, condition=None, parameter=None):
         columns_string = ",".join(columns)
-        query = f"""SELECT {columns_string} FROM {table};"""
-        self.c.execute(query)
+        query = f"SELECT {columns_string} FROM {table}"
+        if condition is not None:
+            query += f" WHERE {condition}"
+        self.c.execute(query, parameter)
         return self.c.fetchall()
 
-
-    def get_ISIN_and_news_link(self, tickers):
-        table_name = "stocks_enriched"
-        ticker_dict = {key: value for key, value in zip([f"ticker_{i}" for i in range(len(tickers))], tickers)}
-        query_placeholder = ",".join([f":ticker_{i}" for i in range(len(tickers))])
-        query = f"""SELECT ISIN, NEWS_LINK FROM {table_name}
-                    WHERE SYMBOL IN ({query_placeholder});
-                    """
-        self.c.execute(query, ticker_dict)
-        return self.c.fetchall()
 
 
 class StockScraping(object):
@@ -207,75 +204,115 @@ class StockEnricher:
             self.stockQueries.insert_stock_information(stock_properties)
 
 
+
+
+class NewsMetaData:
+    def __init__(self, news, isin):
+      self.news = news
+      self.date_pattern = "%Y-%m-%dT%H:%M:%S"
+      self.isin = isin
+      self.executed = False
+
+    
+    def get_news_datetime(self):
+        return datetime.strptime(get_encoded_text(self.news.find("time", {"class": "news__date"}).attrs["datetime"]), self.date_pattern)
+    
+    def get_source(self):
+        return get_encoded_text(self.news.find("span", {"class": "news__source"}))
+        
+    def get_kicker(self):
+        return get_encoded_text(self.news.find("span", {"class": "news__kicker"}))
+        
+    def get_title(self):        
+        return get_encoded_text(self.news.find("span", {"class": "news__title"}))
+    
+    def get_link(self):
+        return get_encoded_text(self.news.find("a", {"class": "news__card"}).attrs["href"])
+        
+    def get_id(self, link):
+        return get_hash_from_string(link)
+    
+    def is_article_date_in_interval(self, start_date, end_date):
+        if start_date <= self.get_news_datetime().date() <= end_date:
+            return True
+        else:
+            return False
+    
+    def extract(self):
+        keys = ["id",
+                "isin",
+                "news_datetime",
+                "title",
+                "source",
+                "kicker",
+                "link"
+                ]
+        values = [self.get_id(self.get_link()), 
+                  self.isin,
+                  str(self.get_news_datetime()),
+                  self.get_title(),
+                  self.get_source(),
+                  self.get_kicker(),
+                  self.get_link()
+                  ]
+        self.meta_data = {key: value for key, value in zip(keys, values)}
+        self.executed = True
+        
+
+
+
+
+def get_encoded_text(obj):
+    if hasattr(obj, "text"):
+        return obj.text.encode('latin').decode()
+    else:
+        return obj
+            
+
+
+    
+
+      
 class ArticleMetaScraper:
-    def __init__(self, conn: sqlite3.Connection, start_date: datetime.date, end_date: datetime.date, tickers: StockTickers):
+    def __init__(self, conn: sqlite3.Connection, start_date: datetime.date, end_date: datetime.date, isin: str):
         self.base_url = "https://www.finanzen.net"
         self.stockQueries = StockQueries(conn)
         self.newsQueries = NewsQueries(conn)
         self.start_date = start_date
         self.end_date = end_date
-        self.tickers = tickers
+        self.isin = isin
     
     
-    def extract_news_metadata(self, ISIN, link):
-        url = self.base_url + link
-        print(url)
-        response = requests.get(url)
-        soup = get_soup(response)
-        
-        for news in soup.find_all(
-            "div", {"class": "news news--item-with-media"}
-        ):
-            news_entry = dict()
-            news_date = news.find("time", {"class": "news__date"})
-            
-            if re.match(r"^[0-5][0-9]:[0-5][0-9]$", news_date.text):
-                article_date = date.today()
-            else:
-                article_date = datetime.strptime(news_date.text, "%d.%m.%y").date()
+    def extract_news_metadata(self, isin, news):
+        newsMetaData = NewsMetaData(news, isin)
+        if newsMetaData.is_article_date_in_interval(self.start_date, self.end_date):
+            newsMetaData.extract()
+        return newsMetaData
 
-            if self.start_date <= article_date <= self.end_date:
-                source = news.find("span", {"class": "news__source"})
-                kicker = news.find("span", {"class": "news__kicker"})
-                title = news.find("span", {"class": "news__title"})
-                link = news.find("a", {"class": "news__card"}).attrs[
-                    "href"
-                ]
-                id = get_hash_from_string(link)
-                keys = [
-                    "id",
-                    "ISIN",
-                    "date",
-                    "title",
-                    "source",
-                    "kicker",
-                    "link_article",
-                ]
-                values = [id, ISIN, news_date, title, source, kicker, link]
-                for key, value in zip(keys, values):
-                    if hasattr(value, "text"):
-                        news_entry[key] = value.text.encode(
-                            "latin"
-                        ).decode()
-                    else:
-                        news_entry[key] = value
-                if news_entry["link_article"]:
-                    news_entry["link_article"] = (
-                        self.base_url + news_entry["link_article"]
-                    )
-                self.newsQueries.insert_article_meta_data(news_entry)
-    
 
-    def get_news_links(self):
-        ISIN_news_link_pairs = self.stockQueries.get_ISIN_and_news_link(self.tickers)
-        for ISIN, url_news in ISIN_news_link_pairs:
-            pagination_links = get_pagination_links(url_news)
-            if pagination_links:
-                for link in pagination_links:
-                    self.extract_news_metadata(ISIN, link)
-            else:
-                print(url_news)
-        return
+    def save_extracted_meta_data(self, isin, soup):
+        all_news = soup.find_all("div", {"class": "news news--item-with-media"}) 
+        for news in all_news:
+            newsMetaData = self.extract_news_metadata(isin, news)
+            if newsMetaData.executed:
+                print(newsMetaData.meta_data)
+                self.newsQueries.insert_article_meta_data(newsMetaData.meta_data)
+
+
+    def get_news_link(self, ISIN: str):
+        return self.stockQueries.select_columns_from_table(
+            columns=["NEWS_LINK"],
+            table="stocks_enriched",
+            condition="ISIN = :ISIN",
+            parameter={"ISIN": ISIN})[0][0]
+    
+    def run(self):
+        news_link = self.get_news_link(self.isin)
+        pagination_links = get_pagination_links(news_link)
+        for link in pagination_links:
+            response = requests.get(link)
+            soup = get_soup(response)
+            self.save_extracted_meta_data(self.isin, soup)
 
 
 

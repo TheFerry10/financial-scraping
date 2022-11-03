@@ -10,7 +10,7 @@ conn = sqlite3.connect("news.db")
 parser = argparse.ArgumentParser(
     description="Extract article meta data for all articles related to a stock in a specified time range."
 )
-parser.add_argument("ticker", type=str, help="stock ticker")
+parser.add_argument("isin", type=str, help="ISIN")
 parser.add_argument("start", type=str, help="start date YYYY-MM-DD")
 parser.add_argument("end", type=str, help="end date YYYY-MM-DD")
 args = parser.parse_args()
@@ -18,13 +18,14 @@ args = parser.parse_args()
 # Input data
 start_date = date.fromisoformat(args.start)
 end_date = date.fromisoformat(args.end)
-tickers = [t.strip() for t in args.ticker.upper().split(",")]
+isin = args.isin
+# tickers = [t.strip() for t in args.ticker.upper().split(",")]
 
 
-print("Ticker: ", tickers)
+print("Ticker: ", isin)
 print("Start date: ", str(start_date))
 print("End date: ", str(end_date))
 
 
-articleMetaScraper = ArticleMetaScraper(conn, start_date, end_date, tickers)
-articleMetaScraper.get_news_links()
+articleMetaScraper = ArticleMetaScraper(conn, start_date, end_date, isin)
+articleMetaScraper.run()
