@@ -19,8 +19,8 @@ StockTickers = List[str]
 
 @dataclass
 class Stock:
-    ISIN: str
-    name: str
+    isin: str
+    stock: str
 
 
 
@@ -47,7 +47,7 @@ class NewsQueries:
         return self.c.fetchall()
 
     def create_article_table_meta(self):
-        table_name = "article_meta"
+        table_name = "ArticleMeta"
         query = f"""CREATE TABLE IF NOT EXISTS {table_name} (
                         id text UNIQUE,
                         isin text,
@@ -67,37 +67,37 @@ class StockQueries:
 
 
     def create_stock_table_base(self):
-        table_name = "stocks"
+        table_name = "Stocks"
         query = f"""CREATE TABLE IF NOT EXISTS {table_name} (
-                        ISIN text,
-                        Stock text,
-                        UNIQUE(ISIN, StockName))
+                        isin text,
+                        stock text,
+                        UNIQUE(isin, stock))
                 """
         self.c.execute(query)
 
     def create_stock_table_enriched(self):
-        table_name = "stocks_enriched"
+        table_name = "StocksEnriched"
         query = f"""CREATE TABLE IF NOT EXISTS {table_name} (
-                        ISIN text,
-                        Stock text,
-                        WKN text,
-                        SYMBOL text,
-                        NewsLink text,
-                        UNIQUE(ISIN))
+                        isin text,
+                        stock text,
+                        wkn text,
+                        symbol text,
+                        news_link text,
+                        UNIQUE(isin))
                 """
         self.c.execute(query)
 
     def insert_stock(self, stock: Stock) -> None:
         with self.conn:
             self.c.execute(
-                "INSERT OR IGNORE INTO stocks VALUES (:ISIN, :name)",
-                {"ISIN": stock.ISIN, "name": stock.name},
+                "INSERT OR IGNORE INTO stocks VALUES (:isin, :name)",
+                {"isin": stock.isin, "name": stock.stock},
             )
 
     def insert_stock_information(self, stock_information):
-        table_name = "stocks_enriched"
+        table_name = "StocksEnriched"
         query = f"""INSERT OR IGNORE INTO {table_name}
-                    VALUES (:ISIN, :STOCK_NAME, :WKN, :SYMBOL, :NEWS_LINK)"""
+                    VALUES (:isin, :stock, :wkn, :symbol, :news_link)"""
         with self.conn:
             self.c.execute(query, stock_information)
 
@@ -107,7 +107,9 @@ class StockQueries:
         query = f"SELECT {columns_string} FROM {table}"
         if condition is not None:
             query += f" WHERE {condition}"
-        self.c.execute(query, parameter)
+            self.c.execute(query, parameter)
+        else:
+            self.c.execute(query)
         return self.c.fetchall()
 
 
@@ -166,44 +168,59 @@ class StockEnricher:
         self.base_url = "https://www.finanzen.net"
         self.stockQueries.create_stock_table_enriched()
 
-    def get_url(self, search_string):
-        search_api = f"/suchergebnis.asp?strSuchString={search_string}"
+    def get_url(self, isin):
+        search_api = f"/suchergebnis.asp?strSuchString={isin}"
         return self.base_url + search_api
 
+    def get_soup_for_isin(self, isin):
+        url = self.get_url(isin)
+        response = requests.get(url)
+        soup = get_soup(response)
+        return soup
+        
+    def extract_soup(self, soup):
+        stockEnriched = StockEnriched(soup)
+        stockEnriched.extract()
+        return stockEnriched
+
     def enrich(self):
-        table_name = "stocks_enriched"
-        for search_string in tqdm(
-            self.stockQueries.select_columns_from_table(["ISIN"], table_name)
-        ):
-            search_string = search_string[0]
-            stock_properties = dict()
-            url = self.get_url(search_string)
-            response = requests.get(url)
-            soup = get_soup(response)
-            print(url)
-
-            # stock name
-            stock_name = soup.find("h1", {"class": "snapshot__headline"}).text
-            stock_properties["STOCK_NAME"] = stock_name.encode("latin").decode()
-
-            # instrument ids
-            for instrument_id in soup.find("div", {"class": "badge-bar"}).find_all(
-                "h2",
-                {"class": "badge pointer display-none-md margin-vertical-0.00"},
-            ):
-                key, value = instrument_id.text.split(" ", 1)
-                stock_properties[key.upper()] = value
-
-            # news link
-            news_link = soup.find(
-                "a", {"class": "display-none-md font-whitespace-nowrap-md"}
-            ).attrs["href"]
-            stock_properties["NEWS_LINK"] = (
-                self.base_url + news_link.encode("latin").decode()
-            )
-            self.stockQueries.insert_stock_information(stock_properties)
+        for isin in tqdm([x[0] for x in self.stockQueries.select_columns_from_table(["isin"], "Stocks")]):
+            print(isin)
+            soup = self.get_soup_for_isin(isin)
+            stockEnriched = self.extract_soup(soup)
+            if stockEnriched.executed:
+                self.stockQueries.insert_stock_information(stockEnriched.data)
 
 
+
+
+class StockEnriched:
+    def __init__(self, stock_html):
+      self.stock_html = stock_html
+      self.executed = False
+
+    
+    def get_stock(self):
+        return get_encoded_text(self.stock_html.find("h2", {"class": "snapshot__headline"}))
+    
+    def get_instrument_ids(self):
+        instrument_id_dict = dict(symbol='', wkn='', isin='')
+        for instrument_id in self.stock_html.find("div", {"class": "badge-bar"}).find_all("h2",{"class": "badge pointer display-none-md margin-vertical-0.00"}):
+            key, value = instrument_id.text.split(" ", 1)
+            instrument_id_dict[key.lower()] = get_encoded_text(value)
+        return instrument_id_dict
+        
+    
+    def get_news_link(self):
+        return get_encoded_text(self.stock_html.find("a", {"class": "display-none-md font-whitespace-nowrap-md"}).attrs["href"])
+
+    
+    def extract(self):
+        instrument_ids = self.get_instrument_ids()
+        self.data = dict(stock=self.get_stock(), news_link=self.get_news_link())
+        self.data.update(instrument_ids)
+        print(self.data)
+        self.executed = True
 
 
 class NewsMetaData:
@@ -295,16 +312,15 @@ class ArticleMetaScraper:
         for news in all_news:
             newsMetaData = self.extract_news_metadata(isin, news)
             if newsMetaData.executed:
-                print(newsMetaData.meta_data)
                 self.newsQueries.insert_article_meta_data(newsMetaData.meta_data)
 
 
-    def get_news_link(self, ISIN: str):
+    def get_news_link(self, isin: str):
         return self.stockQueries.select_columns_from_table(
-            columns=["NEWS_LINK"],
-            table="stocks_enriched",
-            condition="ISIN = :ISIN",
-            parameter={"ISIN": ISIN})[0][0]
+            columns=["news_link"],
+            table="StocksEnriched",
+            condition="isin = :isin",
+            parameter={"isin": isin})[0][0]
     
     def run(self):
         news_link = self.get_news_link(self.isin)

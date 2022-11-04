@@ -6,3 +6,4 @@ conn = sqlite3.connect("news.db")
 
 stockEnricher = StockEnricher(conn=conn)
 stockEnricher.enrich()
+print("Done")
