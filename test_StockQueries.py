@@ -4,23 +4,17 @@ import sqlite3
 
 
 class TestStockQueries(unittest.TestCase):
-    def select_columns_from_table(self):
-        # ABNB
-        ISIN = "US0090661010"
-        table_name = "stocks_enriched"
-        query_condition = "ISIN = :ISIN"
-        parameter = {"ISIN": ISIN}
-        
+    def test_symbol_to_isin(self):
         conn = sqlite3.connect("news.db")
-        self.stockQueries = StockQueries(conn)
-        news_links = self.stockQueries.select_columns_from_table(
-            columns=["NEWS_LINK"],
-            table=table_name,
-            condition=query_condition,
-            parameter=parameter)
-        self.assertEqual(news_links, [("https://www.finanzen.net/news/airbnb-news",)])
-        self.assertEqual(news_links[0], "https://www.finanzen.net/news/airbnb-news")
-
+        stockQueries = StockQueries(conn)
+        self.assertEqual(stockQueries.symbol_to_isin('AAPL'), 'US0378331005')
+        self.assertNotEqual(stockQueries.symbol_to_isin('GOOG'), 'US0378331005')
+        
+    def test_symbol_to_isin_for_unknown_symbol(self):
+        conn = sqlite3.connect("news.db")
+        stockQueries = StockQueries(conn)
+        with self.assertRaises(ValueError):
+            stockQueries.symbol_to_isin('XXXX')
     
 if __name__ == "__main__":
     unittest.main()

@@ -9,7 +9,7 @@ from datetime import datetime
 from datetime import date
 from typing import List
 import re
-from typing import List
+
 
 
 StockTicker = str    
@@ -24,26 +24,61 @@ class Stock:
 
 
 
-class NewsQueries:
+class ContentNewsQueries:
+    _TABLE_NAME = "ArticleContent"
+    
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        self.c = conn.cursor()
+        
+    def create_table(self) -> None:
+        query = f"""CREATE TABLE IF NOT EXISTS  {ContentNewsQueries._TABLE_NAME} (
+            id text UNIQUE,
+            headline text,
+            teaser text,
+            content text)
+            """
+        self.c.execute(query)
+
+    def insert_news_content(self, news_content: dict) -> None:
+        query = f"""INSERT OR IGNORE INTO {ContentNewsQueries._TABLE_NAME}
+            VALUES (:id, :headline, :teaser, :content)
+            """
+        with self.conn:
+            self.c.execute(query, news_content)
+            
+    def select_columns_for_not_processed_records(self, columns: List[str]):
+        columns_string = ','.join(columns)
+        query = f"""SELECT {columns_string}
+            FROM ArticleMeta
+            WHERE id NOT IN (SELECT id FROM {ContentNewsQueries._TABLE_NAME})
+            """
+        self.c.execute(query)
+        return self.c.fetchall()
+        
+
+
+
+class MetaNewsQueries:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
         self.c = conn.cursor()
     
     def insert_article_meta_data(self, news_entry):
-        with self.c:
+        with self.conn:
             self.c.execute(
-                "INSERT OR IGNORE INTO article_meta VALUES (:id, :isin, :news_datetime, :title, :source, :kicker, :link)",
+                "INSERT OR IGNORE INTO ArticleMeta VALUES (:id, :isin, :news_datetime, :title, :source, :kicker, :link)",
                 news_entry,
             )
 
 
     def get_article_meta_data_by_id(self, id):
-        self.c.execute("SELECT * FROM article_meta WHERE id=:id", {"id", id})
+        self.c.execute("SELECT * FROM ArticleMeta WHERE id=:id", {"id", id})
         return self.c.fetchall()
 
 
     def get_all_article_meta_data(self):
-        self.c.execute("SELECT * FROM article_meta")
+        self.c.execute("SELECT * FROM ArticleMeta")
         return self.c.fetchall()
 
     def create_article_table_meta(self):
@@ -90,7 +125,7 @@ class StockQueries:
     def insert_stock(self, stock: Stock) -> None:
         with self.conn:
             self.c.execute(
-                "INSERT OR IGNORE INTO stocks VALUES (:isin, :name)",
+                "INSERT OR IGNORE INTO Stocks VALUES (:isin, :name)",
                 {"isin": stock.isin, "name": stock.stock},
             )
 
@@ -111,6 +146,21 @@ class StockQueries:
         else:
             self.c.execute(query)
         return self.c.fetchall()
+    
+    def symbol_to_isin(self, symbol: str) -> str:    
+        result = self.select_columns_from_table(
+            ['isin'],
+            "StocksEnriched",
+            "symbol = :symbol",
+            {'symbol': symbol})
+        if result:
+            isin = result[0][0]
+            return isin
+        else:
+            print(f"ISIN for Symbol {symbol} not found.")
+            raise ValueError  
+        
+
 
 
 
@@ -272,7 +322,7 @@ class NewsMetaData:
                   self.get_kicker(),
                   self.get_link()
                   ]
-        self.meta_data = {key: value for key, value in zip(keys, values)}
+        self.metadata = {key: value for key, value in zip(keys, values)}
         self.executed = True
         
 
@@ -294,7 +344,8 @@ class ArticleMetaScraper:
     def __init__(self, conn: sqlite3.Connection, start_date: datetime.date, end_date: datetime.date, isin: str):
         self.base_url = "https://www.finanzen.net"
         self.stockQueries = StockQueries(conn)
-        self.newsQueries = NewsQueries(conn)
+        self.newsQueries = MetaNewsQueries(conn)
+        self.newsQueries.create_article_table_meta()
         self.start_date = start_date
         self.end_date = end_date
         self.isin = isin
@@ -312,7 +363,7 @@ class ArticleMetaScraper:
         for news in all_news:
             newsMetaData = self.extract_news_metadata(isin, news)
             if newsMetaData.executed:
-                self.newsQueries.insert_article_meta_data(newsMetaData.meta_data)
+                self.newsQueries.insert_article_meta_data(newsMetaData.metadata)
 
 
     def get_news_link(self, isin: str):
@@ -324,7 +375,7 @@ class ArticleMetaScraper:
     
     def run(self):
         news_link = self.get_news_link(self.isin)
-        pagination_links = get_pagination_links(news_link)
+        pagination_links = get_pagination_links(self.base_url + news_link)
         for link in pagination_links:
             response = requests.get(link)
             soup = get_soup(response)
@@ -360,6 +411,110 @@ def get_pagination_links(url: str):
     max_page = max(page_numbers)
     base_link = max(base_links, key=base_links.count)
     links = [base_url + "_".join([base_link, str(i)]) for i in range(1, max_page+1)]
-    validate_links(links)
+    # validate_links(links)
     return links
     
+
+def is_div_element_in_soup(soup, element_prop):
+    if soup.find("div", element_prop):
+        return True
+    else:
+        return False   
+   
+   
+class NewsContentData:
+    def __init__(self, news_content, id):
+        self.news_content = news_content
+        self.executed = False
+        self.id = id
+        self.data = dict()
+    
+    
+    def clean_content(self, markup):
+        markup = markup.split("Weitere News zum Thema")[0]
+        soup = BeautifulSoup(markup, "html.parser")
+        content_clean = (
+            " ".join([word.strip() for word in soup.text.split()])
+            .encode("latin", errors="ignore")
+            .decode(errors="ignore")
+        )
+        return content_clean
+    
+    def get_headline(self):
+        if is_div_element_in_soup(self.news_content, {"class": "row news-snapshot"}):
+            headline_html = self.news_content.find("div", {"class": "row news-snapshot"})
+        else:
+            if is_div_element_in_soup(self.news_content, {"class": "single-article"}):
+                headline_html = self.news_content.find("div", {"class": "single-article"})
+            else:
+                headline_html = None
+
+        try:
+            headline_text = (headline_html.find("h1").text.encode("latin").decode())
+        except AttributeError:
+            print("Headline cannot be extracted. Continue with empty headline")
+            headline_text = ""
+        return headline_text
+    
+    def get_teaser(self):
+        if is_div_element_in_soup(self.news_content, {"class": "teaser teaser-snapshot"}):
+            teaser_html = self.news_content.find("div", {"class": "teaser teaser-snapshot"})
+        else:
+            teaser_html = None
+        try:
+            teaser_text = (teaser_html.find_all("div")[-1].text.encode("latin").decode())
+        except AttributeError:
+            print("Teaser cannot be extracted. Continue with empty headline")
+            teaser_text = ''
+        return teaser_text
+
+    def get_content(self):
+        div_properties_to_delete = [
+            {"class": "dropdown-container-triangle seperate-triangle"},
+            {"class": "dropdown-container-chartflow relative"},
+            {"class": "visible-xs-block"},
+            {"class": "pull-right"},
+            {"class": "lvgSearchOuter"},
+            {"class": "native-content-ad-container"},
+            {"class": "medium-font light-grey"},
+            {
+            "class": "",
+            },
+        ]
+        news_container = self.news_content.find("div", {"id": "news-container"})
+        if news_container:
+            for div_properties in div_properties_to_delete:                
+                    if news_container.find("div", div_properties):
+                        news_container.find("div", div_properties).decompose()
+
+            content_html = news_container.prettify()
+            content_text = self.clean_content(content_html)
+        else:
+            print("News container empty. Continue with empty news content")
+            content_text = ""
+        return content_text
+            
+    
+    def scrape(self):
+        keys = ["id", "headline", "teaser", "content"]
+        values = [self.id, self.get_headline(), self.get_teaser(), self.get_content()]
+        self.data = {key: value for key, value in zip(keys, values)}
+        self.executed = True
+
+
+class ArticleContentScraper:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.base_url = "https://www.finanzen.net"
+        self.contentNewsQueries = ContentNewsQueries(conn)
+        self.contentNewsQueries.create_table()
+    
+    def run(self):
+        id_link_pairs = self.contentNewsQueries.select_columns_for_not_processed_records(columns=['id', 'link'])
+        for id, link in tqdm(id_link_pairs):
+            url = self.base_url + link
+            response = requests.get(url)
+            soup = get_soup(response)
+            newsContentData = NewsContentData(soup, id)
+            newsContentData.scrape()
+            if newsContentData.executed:
+                self.contentNewsQueries.insert_news_content(newsContentData.data)
