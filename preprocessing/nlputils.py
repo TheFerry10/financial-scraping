@@ -6,6 +6,7 @@ from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from sklearn.feature_extraction.text import TfidfVectorizer
 from typing import List
+from tqdm import tqdm
 
 nltk.download('punkt')
 nltk.download('stopwords')
@@ -18,7 +19,9 @@ class GermanTextProcessing:
      A collection of preprocessing steps specified to the needs of German language.
      """
      def __init__(self):
-          self.stop_words = set(stopwords.words("german"))
+          with open("data/stopwords-de.txt", "r") as f:
+               self.stop_words = set(f.read().split("\n"))
+          # self.stop_words = set(stopwords.words("german"))
           self.nlp = spacy.load('de_core_news_sm')
 
      def clean(self, text: str, lower: bool = False, remove_stopwords: bool = False) -> str:
@@ -41,14 +44,11 @@ class GermanTextProcessing:
      
      def batch_run(self, corpus: List[str]):
           corpus_processed = []
-          for text in corpus:
+          for text in tqdm(corpus):
                text_clean = self.clean(text, remove_stopwords=True)
                text_norm = self.tag_pos(text_clean)
                corpus_processed.append(text_norm)
           return corpus_processed
-          
-          
-
 
      
      
