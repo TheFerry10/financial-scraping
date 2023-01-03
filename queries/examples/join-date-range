@@ -1,0 +1,5 @@
+-- SQLite
+SELECT t.topline, t.timestamp, d.Date
+FROM Tagesschau AS t
+JOIN DateDimension AS d ON t.timestamp BETWEEN d.CalendarDateInterval and d.CalendarDateIntervalEnd
+WHERE d.Date = '2021-12-30';

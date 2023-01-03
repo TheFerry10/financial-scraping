@@ -4,6 +4,7 @@ import requests
 import datetime
 from datetime import date
 from typing import List
+from scraping.helper import normalize_datetime
 
 
 
@@ -31,18 +32,29 @@ class TagesschauScraper:
         all_news_teaser = soup.find_all(class_="columns teaser-xs twelve teaser-xs__wide")
         teasers = []
         for teaser in all_news_teaser:
+            teaser_struct = dict()
             teaser_struct = {key: teaser.find(class_=f"teaser-xs__{key}").get_text(strip=True) for key in ['date', 'topline', 'headline', 'shorttext']}
             teaser_struct['link'] = teaser.find(class_="teaser-xs__link").get('href')
             teaser_struct['id'] = get_hash_from_string(teaser_struct['link'])
-            teaser_struct['tags'] = ','.join(self.get_tags_from_article(get_soup(requests.get(teaser_struct['link']))))
-            teasers.append(teaser_struct)
+            teaser_struct['date'] = normalize_datetime(teaser_struct['date'])
+            
+            try:
+                soup_link = get_soup(requests.get(teaser_struct['link']))
+                teaser_struct['tags'] = ','.join(self.get_tags_from_article(soup_link))
+                teasers.append(teaser_struct)
+                 
+            except requests.exceptions.TooManyRedirects:
+                print(f"Article not found for link: {teaser_struct['link']}. Ignore extracted data.")
+                
         return teasers
     
     def get_tags_from_article(self, soup):
         tags_group = soup.find(class_="taglist")
         if tags_group:
-            tags = [tag.get_text(strip=True) for tag in tags_group.find_all(class_="tag-btn tag-btn--light-grey")]
-            return tags
+            return [tag.get_text(strip=True) for tag in tags_group.find_all(class_="tag-btn tag-btn--light-grey") if hasattr(tag, "get_text")]
+        else:
+            return []
+        
         
 
 class TagesschauDB:
@@ -61,7 +73,7 @@ class TagesschauDB:
         query = f"""
             CREATE TABLE IF NOT EXISTS  {TagesschauDB._TABLE_NAME} (
             id text UNIQUE,
-            date text,
+            timestamp datetime,
             topline text,
             headline text,
             shorttext text,

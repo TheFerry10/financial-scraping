@@ -8,14 +8,15 @@ from tqdm import tqdm
 
 def main():
     db = TagesschauDB()
-    db.drop_table()
-    db.create_table()
+    # db.drop_table()
+    # db.create_table()
     
     tagesschauScraper = TagesschauScraper()
-    dates = get_dates_in_interval(date(2022,1,1), date(2022,1,31))
+    dates = get_dates_in_interval(date(2022,12,22), date(2022,12,31))
     
     for date_ in tqdm(dates):
-        url = tagesschauScraper.get_url(date_, "wirtschaft")
+        url = tagesschauScraper.get_url(date_)
+        print(url)
         response = requests.get(url)
         soup = get_soup(response)
         teasers = tagesschauScraper.get_all_news_teaser(soup)
